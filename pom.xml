@@ -4,12 +4,12 @@
     <groupId>org.wyki</groupId>
     <artifactId>pelops-mvn</artifactId>
     <packaging>jar</packaging>
-    <version>0.805-SNAPSHOT</version>
+    <version>0.805-0.6.4-SNAPSHOT</version>
     <name>Pelops Mavenized</name>
     <url>http://github.com/danwashusen/pelops</url>
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <cassandra.version>0.6.3</cassandra.version>
+        <cassandra.version>0.6.4</cassandra.version>
     </properties>
     <dependencies>
         <dependency>
