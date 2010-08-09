@@ -17,6 +17,7 @@ import org.apache.cassandra.thrift.TokenRange;
 import org.apache.cassandra.thrift.Cassandra.Client;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TProtocol;
+import org.apache.thrift.transport.TFramedTransport;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
@@ -37,7 +38,7 @@ import org.wyki.portability.SystemProxy;
 public class ThriftPoolComplex implements ThriftPool {
 	
 	private static final Logger logger = SystemProxy.getLoggerFromFactory(ThriftPoolComplex.class);
-	
+	                                    
 	/**
 	 * Create a <code>Selector</code> object.
 	 * @param keyspace				The keyspace to operate on
@@ -110,10 +111,12 @@ public class ThriftPoolComplex implements ThriftPool {
 		return getConnectionExcept(null);
 	}
 	
-	ThriftPoolComplex(String[] contactNodes, int defaultPort, boolean dynamicNodeDiscovery, String discoveryKeyspace, Policy poolPolicy, GeneralPolicy generalPolicy) {
+	ThriftPoolComplex(String[] contactNodes, int defaultPort, boolean dynamicNodeDiscovery, String discoveryKeyspace, Policy poolPolicy, GeneralPolicy generalPolicy,
+                      boolean framed) {
 		this.defaultPort = defaultPort;
         this.generalPolicy = generalPolicy;
         pool = new MultiNodePool();
+        this.framed = framed;
 		this.discoveryKeyspace = discoveryKeyspace;
 		this.poolPolicy = poolPolicy;
 		for (String node : contactNodes)
@@ -241,6 +244,7 @@ public class ThriftPoolComplex implements ThriftPool {
 	private Policy poolPolicy;
 	private final MultiNodePool pool;
 	private final int defaultPort;
+    private final boolean framed;
     private GeneralPolicy generalPolicy;
     private final String discoveryKeyspace;
 	private ExecutorService clusterWatcherExec = Executors.newSingleThreadExecutor();
@@ -297,12 +301,19 @@ public class ThriftPoolComplex implements ThriftPool {
 		private final TTransport transport;
 		private final TProtocol protocol;
 		private final Client client;
+        private final boolean framed;
+
 		int nodeSessionId = 0;
 		
-		ConnectionComplex(NodeContext nodeContext, int port) throws SocketException {
+		ConnectionComplex(NodeContext nodeContext, int port, boolean framed) throws SocketException {
 			this.nodeContext = nodeContext;
-			TSocket socket = new TSocket(nodeContext.node, port);
-			transport = socket;
+            this.framed = framed;
+            TSocket socket = new TSocket(nodeContext.node, port);
+            if (framed) {
+                transport = new TFramedTransport(socket);
+            } else {
+                transport = socket;
+            }
 			protocol = new TBinaryProtocol(transport);
 			socket.getSocket().setKeepAlive(true);
 			client = new Client(protocol);
@@ -378,7 +389,16 @@ public class ThriftPoolComplex implements ThriftPool {
         public void close() {
 			transport.close();
 		}
-	}
+
+        /**
+         * Returns if the internal connection is framed or not
+         *
+         * @return true if framed, else false
+         */
+        public boolean isFramed() {
+            return framed;
+        }
+    }
 	
 	@SuppressWarnings("serial")
 	class ConnectionList extends ConcurrentLinkedQueue<Connection> {}
@@ -471,7 +491,7 @@ public class ThriftPoolComplex implements ThriftPool {
 		private Connection createConnection() {
 			Connection conn;
 			try {
-				conn = new ConnectionComplex(this, defaultPort);
+				conn = new ConnectionComplex(this, defaultPort, framed);
 			} catch (SocketException e) {
                 logger.error(e.getMessage(), e);
 				return null;
