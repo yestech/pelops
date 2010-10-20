@@ -39,17 +39,14 @@ public class ThriftPoolBasic extends ThriftPoolAbstract {
 
     @Override
     public Connection getConnection() throws Exception {
-        return new BasicConnection(node, port, keyspace);
+        BasicConnection connection = new BasicConnection(node, port, keyspace);
+        connection.open(-1);
+        return connection;
     }
 
     @Override
     public Connection getConnectionExcept(String notNode) throws Exception {
         return getConnection();
-    }
-
-    @Override
-    public Connection getManagementConnection() throws Exception {
-        return new BasicConnection(node, port, null);
     }
 
     @Override
@@ -98,7 +95,7 @@ public class ThriftPoolBasic extends ThriftPoolAbstract {
 
         @Override
         public void flush() throws TTransportException {
-            transport.flush();
+//            transport.flush();
         }
 
         @Override
@@ -121,12 +118,10 @@ public class ThriftPoolBasic extends ThriftPoolAbstract {
 
                 transport.open();
 
-                if (keyspace != null) {
-                    try {
-                        client.set_keyspace(keyspace);
-                    } catch (Exception e) {
-                        throw new IllegalStateException(format("Failed to set keyspace '%s' on client.  See cause for details...", keyspace), e);
-                    }
+                try {
+                    client.set_keyspace(keyspace);
+                } catch (Exception e) {
+                    throw new IllegalStateException(format("Failed to set keyspace '%s' on client.  See cause for details...", keyspace), e);
                 }
                 return true;
             } catch (TTransportException e) {

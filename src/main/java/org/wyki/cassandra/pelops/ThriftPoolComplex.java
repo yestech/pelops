@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.cassandra.thrift.Clock;
 import org.apache.cassandra.thrift.InvalidRequestException;
 import org.apache.cassandra.thrift.TokenRange;
 import org.apache.cassandra.thrift.Cassandra.Client;
@@ -72,8 +73,7 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
      * @param generalPolicy the general pelops policy
      */
 	public ThriftPoolComplex(String[] contactNodes, int defaultPort, String keyspace, boolean dynamicNodeDiscovery, Policy poolPolicy, GeneralPolicy generalPolicy) {
-        this.contactNodes = contactNodes;
-        this.defaultPort = defaultPort;
+		this.defaultPort = defaultPort;
         this.generalPolicy = generalPolicy;
         pool = new MultiNodePool();
 		this.keyspace = keyspace;
@@ -156,17 +156,7 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 		}
 	}
 
-    @Override
-    public Connection getManagementConnection() throws Exception {
-        return new ConnectionComplex(contactNodes[0], defaultPort, keyspace, new ConnectionReleaseHandler() {
-            @Override
-            public void release(ConnectionComplex connection, boolean afterException) {
-                // do nothing
-            }
-        });
-    }
-
-    /**
+	/**
 	 * Cleanly shutdown this pool and associated Thrift connections and operations.
 	 * TODO wait until all in-use connections are returned to the pool before exiting.
 	 */
@@ -217,8 +207,7 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 
 	private Policy poolPolicy;
 	private final MultiNodePool pool;
-    private String[] contactNodes;
-    private final int defaultPort;
+	private final int defaultPort;
     private GeneralPolicy generalPolicy;
     private final String keyspace;
 	private ExecutorService clusterWatcherExec = Executors.newSingleThreadExecutor();
@@ -226,7 +215,7 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 
 
 	private void touchNodeContext(String node) {
-			NodeContext newContext = new NodeContext(node);
+			NodeContext newContext = new NodeContext(node, keyspace);
 			if (pool.putIfAbsent(node, newContext) == null)
 				newContext.init();
 	}
@@ -271,19 +260,15 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 	 *
 	 */
 	public class ConnectionComplex implements Connection {
-        private String node;
-        private String keyspace;
-        private ConnectionReleaseHandler releaseHandler;
-        private final TTransport transport;
+		private final NodeContext nodeContext;
+		private final TTransport transport;
 		private final TProtocol protocol;
 		private final Client client;
 		int nodeSessionId = 0;
 
-		ConnectionComplex(String node, int port, String keyspace, ConnectionReleaseHandler releaseHandler) throws SocketException, TException, InvalidRequestException {
-            this.node = node;
-            this.keyspace = keyspace;
-            this.releaseHandler = releaseHandler;
-            TSocket socket = new TSocket(node, port);
+		ConnectionComplex(NodeContext nodeContext, int port) throws SocketException, TException, InvalidRequestException {
+			this.nodeContext = nodeContext;
+            TSocket socket = new TSocket(nodeContext.node, port);
             transport = poolPolicy.isFramedTransportRequired() ? new TFramedTransport(socket) : socket;
 			protocol = new TBinaryProtocol(transport);
 			socket.getSocket().setKeepAlive(true);
@@ -305,7 +290,7 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 		 */
 		@Override
         public String getNode() {
-			return node;
+			return nodeContext.node;
 		}
 
 		/**
@@ -328,7 +313,7 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 		 */
 		@Override
         public void release(boolean afterException) {
-            releaseHandler.release(this, afterException);
+			nodeContext.onConnectionRelease(this, afterException);
 		}
 
 		@Override
@@ -347,16 +332,15 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 				transport.open();
 				this.nodeSessionId = nodeSessionId;
 
-                if (keyspace != null) {
+                if (nodeContext.keyspace != null) {
                     try {
-                        client.set_keyspace(keyspace);
+                        client.set_keyspace(nodeContext.keyspace);
                     } catch (Exception e) {
-                        logger.warn("Failed to set keyspace on client.  See cause for details...", e);
-                        return false;
+                        throw new IllegalStateException(e);
                     }
                 }
 			} catch (TTransportException e) {
-                logger.error("Failed to open transport.  See cause for details...", e);
+                logger.error(e.getMessage(), e);
 				return false;
 			}
 			return true;
@@ -371,10 +355,6 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 		}
     }
 
-    public interface ConnectionReleaseHandler {
-        void release(ConnectionComplex connection, boolean afterException);
-    }
-
 	@SuppressWarnings("serial")
 	class ConnectionList extends ConcurrentLinkedQueue<Connection> {}
 
@@ -382,6 +362,7 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 		private final int MIN_CREATE_CONNECTION_BACK_OFF = 125;
 		private final int MAX_CREATE_CONNECTION_BACK_OFF = 20000;
 		private final String node;
+        private String keyspace;
         private final AtomicInteger countInUse = new AtomicInteger(0);
 		private final AtomicInteger countCached = new AtomicInteger(0);
 		private final ConnectionList connCache = new ConnectionList();
@@ -389,8 +370,9 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 		private AutoResetEvent refillNow = new AutoResetEvent(true);
 		private final AtomicInteger sessionId = new AtomicInteger(0);
 
-		NodeContext(String node) {
+		NodeContext(String node, String keyspace) {
 			this.node = node;
+            this.keyspace = keyspace;
         }
 
 		void init() {
@@ -466,12 +448,7 @@ public class ThriftPoolComplex extends ThriftPoolAbstract {
 		private Connection createConnection() {
 			Connection conn;
 			try {
-				conn = new ConnectionComplex(this.node, defaultPort, keyspace, new ConnectionReleaseHandler() {
-                    @Override
-                    public void release(ConnectionComplex connection, boolean afterException) {
-			            onConnectionRelease(connection, afterException);
-                    }
-                });
+				conn = new ConnectionComplex(this, defaultPort);
 			} catch (Exception e) {
                 logger.error(e.getMessage(), e);
 				return null;
